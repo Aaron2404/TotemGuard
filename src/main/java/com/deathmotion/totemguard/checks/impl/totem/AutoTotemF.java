@@ -34,15 +34,15 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-public final class AutoTotemB extends Check implements TotemEventListener {
+public final class AutoTotemF extends Check implements TotemEventListener {
 
     private final TotemGuard plugin;
 
     // Store player-specific previous data using ConcurrentHashMap for thread safety
     private final ConcurrentHashMap<UUID, CheckData> playerDataMap = new ConcurrentHashMap<>();
 
-    public AutoTotemB(TotemGuard plugin) {
-        super(plugin, "AutoTotemB", "Impossible consistency", true);
+    public AutoTotemF(TotemGuard plugin) {
+        super(plugin, "AutoTotemF", "Impossible consistency between low outliers", true);
         this.plugin = plugin;
 
         TotemProcessor.getInstance().registerListener(this);
@@ -56,21 +56,22 @@ public final class AutoTotemB extends Check implements TotemEventListener {
 
         // Calculate standard deviation, mean, skewness, and outliers using IQR
         double standardDeviation = MathUtil.getStandardDeviation(intervals);
+
         double mean = MathUtil.getMean(intervals);
         double skewness = MathUtil.getSkewness(intervals);
 
         // Use the IQR-based method to get both low and high outliers
         Pair<List<Double>, List<Double>> outliers = MathUtil.getOutliers(intervals);
         List<Double> lowOutliers = outliers.getX();  // Low outliers (fast actions)
-        List<Double> highOutliers = outliers.getY(); // High outliers (slow actions)
+        double outlierDeviation = MathUtil.getStandardDeviation(lowOutliers);
 
-//        plugin.debug("===================");
-//        plugin.debug("Player: " + player.getName());
-//        plugin.debug("Standard Deviation: " + standardDeviation);
-//        plugin.debug("Mean: " + mean);
-//        plugin.debug("Skewness: " + skewness);
-//        plugin.debug("Low Outliers: " + lowOutliers);
-//        plugin.debug("High Outliers: " + highOutliers);
+        plugin.debug("===================");
+        plugin.debug("Player: " + player.getName());
+        plugin.debug("Standard Deviation: " + standardDeviation);
+        plugin.debug("Outlier Deviation: " + outlierDeviation);
+        plugin.debug("Mean: " + mean);
+        plugin.debug("Skewness: " + skewness);
+        plugin.debug("Low Outliers: " + lowOutliers);
 
         // Retrieve or create player data
         CheckData data = playerDataMap.computeIfAbsent(playerUUID, uuid -> new CheckData());
@@ -79,7 +80,6 @@ public final class AutoTotemB extends Check implements TotemEventListener {
         data.addStandardDeviation(standardDeviation);
         data.addSkewness(skewness);
         data.addLowOutliers(lowOutliers);
-        data.addHighOutliers(highOutliers);
 
         // Dynamic thresholds based on standard deviation and mean
         double dynamicLowThreshold = Math.max(50, mean - standardDeviation * 1.5);
@@ -90,15 +90,15 @@ public final class AutoTotemB extends Check implements TotemEventListener {
         }
 
         // Adjust detection logic based on more refined thresholds
-        if (isSuspiciousBehavior(standardDeviation, skewness, lowOutliers, highOutliers, dynamicLowThreshold)) {
-            flag(player, createComponent(standardDeviation, mean, skewness, lowOutliers.size(), highOutliers.size()), plugin.getConfigManager().getSettings().getChecks().getAutoTotemB());
+        if (isSuspiciousBehavior(standardDeviation, skewness, lowOutliers, dynamicLowThreshold)) {
+            flag(player, createComponent(standardDeviation, mean, skewness, lowOutliers.size()), plugin.getConfigManager().getSettings().getChecks().getAutoTotemB());
         }
 
         // Limit the stored data to 10 events for each player
         data.trimToSize(10);
     }
 
-    private boolean isSuspiciousBehavior(double standardDeviation, double skewness, List<Double> lowOutliers, List<Double> highOutliers, double lowThreshold) {
+    private boolean isSuspiciousBehavior(double standardDeviation, double skewness, List<Double> lowOutliers, double lowThreshold) {
         // Cheaters will have more consistent low outliers and narrow deviations
         boolean lowStdDev = standardDeviation < 40; // Tightened threshold for faster detection
         boolean abnormalSkewness = Math.abs(skewness) > 1.0 || skewness < -1.0; // Stricter skewness threshold
@@ -106,14 +106,11 @@ public final class AutoTotemB extends Check implements TotemEventListener {
         // Focus on low outliers to detect quick, consistent re-totem actions
         boolean frequentLowOutliers = lowOutliers.size() >= 3 && lowOutliers.stream().allMatch(outlier -> outlier < lowThreshold);
 
-        // Mixed outliers may indicate legitimate play, but frequent low outliers are a strong sign of cheating
-        boolean suspiciousLowOutliers = frequentLowOutliers && highOutliers.isEmpty();
-
         // Combine low standard deviation and outlier detection for more consistent flagging
-        return (lowStdDev && abnormalSkewness) || suspiciousLowOutliers;
+        return (lowStdDev && abnormalSkewness);
     }
 
-    private Component createComponent(double sd, double mean, double skewness, int lowOutlierCount, int highOutlierCount) {
+    private Component createComponent(double sd, double mean, double skewness, int lowOutlierCount) {
         return Component.text()
                 .append(Component.text("SD: ", NamedTextColor.GRAY))
                 .append(Component.text(sd + "ms", NamedTextColor.GOLD))
@@ -126,9 +123,6 @@ public final class AutoTotemB extends Check implements TotemEventListener {
                 .append(Component.newline())
                 .append(Component.text("Low Outliers: ", NamedTextColor.GRAY))
                 .append(Component.text(lowOutlierCount, NamedTextColor.GOLD))
-                .append(Component.newline())
-                .append(Component.text("High Outliers: ", NamedTextColor.GRAY))
-                .append(Component.text(highOutlierCount, NamedTextColor.GOLD))
                 .build();
     }
 
@@ -149,6 +143,7 @@ public final class AutoTotemB extends Check implements TotemEventListener {
         private final List<Double> standardDeviations = new ArrayList<>();
         private final List<Double> skewnesses = new ArrayList<>();
         private final List<List<Double>> lowOutliers = new ArrayList<>();
+        private final List<List<Double>> lowOutliersDeviations = new ArrayList<>();
         private final List<List<Double>> highOutliers = new ArrayList<>();
 
         public void addStandardDeviation(double sd) {
